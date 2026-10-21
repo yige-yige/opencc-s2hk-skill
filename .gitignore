@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 安装器产物（不应进仓库）
+skills/*/scripts/.python
+*.bak.*
+
+# 打包产物
+*.zip
+*.tar.gz
+
+# 测试样本
+*.s2hk.pptx
+*.s2hk.md
+*.s2hk.txt
+
+# macOS
+.DS_Store
