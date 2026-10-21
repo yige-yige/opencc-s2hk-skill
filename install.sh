@@ -47,6 +47,23 @@ ok()   { printf '  [ok]   %s\n' "$*"; }
 warn() { printf '  [warn] %s\n' "$*"; }
 die()  { printf '\n[失败] %s\n' "$*" >&2; exit 1; }
 
+# 备份必须移出 skills 目录：留在原地会被 agent 当成同名技能重复加载
+BACKUP_ROOT="$HOME/.local/share/opencc-s2hk-skill/backups/$(date +%Y%m%d%H%M%S)"
+backup_away() {
+  _src="$1"
+  _rel="$(printf '%s' "${_src#$HOME/}" | tr '/' '_')"
+  mkdir -p "$BACKUP_ROOT" 2>/dev/null || return 1
+  mv "$_src" "$BACKUP_ROOT/$_rel" 2>/dev/null
+}
+
+# 清理旧版安装器遗留在 skills 目录里的备份（它们会造成技能重复）
+sweep_legacy_backups() {
+  for _d in "$1"/*.bak.*; do
+    [ -e "$_d" ] || continue
+    backup_away "$_d" && warn "已移走遗留备份 $(basename "$_d")"
+  done
+}
+
 # 检测路径|技能目录|显示名|是否无条件安装
 AGENT_MAP=(
   "$HOME/.codebuddy|$HOME/.codebuddy/skills|CodeBuddy|1"
@@ -164,10 +181,10 @@ fi
 say ""
 say "[2/4] 安装到标准共享目录"
 mkdir -p "$CANON" || die "无法创建 $CANON"
+sweep_legacy_backups "$CANON"
 for n in "${SKILL_NAMES[@]}"; do
   if [ -e "$CANON/$n" ] || [ -L "$CANON/$n" ]; then
-    BAK="$CANON/$n.bak.$(date +%Y%m%d%H%M%S)"
-    mv "$CANON/$n" "$BAK" && warn "$n 已存在，旧版备份到 $(basename "$BAK")"
+    backup_away "$CANON/$n" && warn "$n 已存在，旧版备份到 $BACKUP_ROOT"
   fi
   cp -R "$SKILLS_SRC/$n" "$CANON/" || die "拷贝 $n 失败"
   [ -n "$PYBIN" ] && printf '%s\n' "$PYBIN" > "$CANON/$n/scripts/.python"
@@ -190,10 +207,10 @@ while [ $i -lt ${#TARGETS[@]} ]; do
   dir="${TARGETS[$i]}"; label="${LABELS[$i]}"; i=$((i + 1))
   [ "$dir" = "$CANON" ] && continue
   mkdir -p "$dir" 2>/dev/null || { warn "${label}：无法创建 ${dir}，跳过"; continue; }
+  sweep_legacy_backups "$dir"
   for n in "${SKILL_NAMES[@]}"; do
     if [ -e "$dir/$n" ] || [ -L "$dir/$n" ]; then
-      BAK="$dir/$n.bak.$(date +%Y%m%d%H%M%S)"
-      mv "$dir/$n" "$BAK" >/dev/null 2>&1 && warn "${label}：旧版备份到 $(basename "$BAK")"
+      backup_away "$dir/$n" && warn "${label}：旧版 $n 已备份"
     fi
     if [ "$LINK" -eq 1 ]; then
       ln -s "$CANON/$n" "$dir/$n" || { warn "${label}：链接 $n 失败"; continue; }

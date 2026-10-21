@@ -43,6 +43,11 @@ for dir in "${DIRS[@]}"; do
       rm -rf "$dir/$n" && printf '  已删除 %s\n' "$dir/$n"
     fi
   done
+  # 旧版安装器可能把备份留在 skills 目录里，一并清掉（它们会造成技能重复）
+  for d in "$dir"/opencc-s2hk.bak.* "$dir"/pptx-s2t-font-convert.bak.*; do
+    [ -e "$d" ] || continue
+    rm -rf "$d" && printf '  已删除遗留备份 %s\n' "$d"
+  done
 done
 
 # XDG 软链接（指向 CANON 时才删）
@@ -61,4 +66,4 @@ if [ "$KEEP_ENV" -eq 0 ] && [ -d "$ENV_DIR" ]; then
 fi
 
 printf '\n卸载完成。\n'
-printf '备注：旧版备份目录 *.bak.* 与 ~/.zshrc 里的 PATH 行（如有）需手动清理。\n'
+printf '备注：~/.local/share/opencc-s2hk-skill/backups/ 下的历史备份与 ~/.zshrc 里的 PATH 行（如有）需手动清理。\n'
