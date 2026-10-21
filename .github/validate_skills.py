@@ -100,6 +100,22 @@ for name in sorted(os.listdir(SKILLS_DIR) if os.path.isdir(SKILLS_DIR) else []):
 if checked == 0:
     fail("skills/ 下没有发现任何 skill")
 
+# -------------------------------------------------- shell 脚本的变量展开陷阱
+# bash 会把紧跟在 $var 之后的非 ASCII 字节当成变量名的一部分，
+# 于是 "$label：中文" 被解析为变量 label：中文 → set -u 下直接 unbound variable。
+# 必须写成 "${label}：中文"。
+VAR_BEFORE_NON_ASCII = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]")
+for sh in ("install.sh", "uninstall.sh"):
+    p = os.path.join(ROOT, sh)
+    if not os.path.isfile(p):
+        continue
+    with open(p, encoding="utf-8") as f:
+        for lineno, line in enumerate(f, 1):
+            m = VAR_BEFORE_NON_ASCII.search(line)
+            if m:
+                fail("%s:%d: %r 后紧跟非 ASCII 字符，必须改成 ${...} 形式"
+                     % (sh, lineno, m.group(0)))
+
 # ------------------------------------------------------------------ 转换自检
 try:
     from opencc import OpenCC

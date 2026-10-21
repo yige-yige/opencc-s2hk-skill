@@ -136,7 +136,7 @@ if [ "$WITH_DEPS" -eq 1 ]; then
         break) ARGS=(--user --break-system-packages "${PKGS[@]}") ;;
       esac
       "$SYS_PY" -m pip install --quiet --disable-pip-version-check "${ARGS[@]}" >/dev/null 2>&1
-      if deps_ok "$SYS_PY"; then PYBIN="$SYS_PY"; ok "已装入系统 python3（模式：$mode）"; break; fi
+      if deps_ok "$SYS_PY"; then PYBIN="$SYS_PY"; ok "已装入系统 python3（模式：${mode}）"; break; fi
     done
 
     if [ -z "$PYBIN" ]; then
@@ -189,16 +189,16 @@ i=0
 while [ $i -lt ${#TARGETS[@]} ]; do
   dir="${TARGETS[$i]}"; label="${LABELS[$i]}"; i=$((i + 1))
   [ "$dir" = "$CANON" ] && continue
-  mkdir -p "$dir" 2>/dev/null || { warn "$label：无法创建 $dir，跳过"; continue; }
+  mkdir -p "$dir" 2>/dev/null || { warn "${label}：无法创建 ${dir}，跳过"; continue; }
   for n in "${SKILL_NAMES[@]}"; do
     if [ -e "$dir/$n" ] || [ -L "$dir/$n" ]; then
       BAK="$dir/$n.bak.$(date +%Y%m%d%H%M%S)"
-      mv "$dir/$n" "$BAK" >/dev/null 2>&1 && warn "$label：旧版备份到 $(basename "$BAK")"
+      mv "$dir/$n" "$BAK" >/dev/null 2>&1 && warn "${label}：旧版备份到 $(basename "$BAK")"
     fi
     if [ "$LINK" -eq 1 ]; then
-      ln -s "$CANON/$n" "$dir/$n" || { warn "$label：链接 $n 失败"; continue; }
+      ln -s "$CANON/$n" "$dir/$n" || { warn "${label}：链接 $n 失败"; continue; }
     else
-      cp -R "$CANON/$n" "$dir/" || { warn "$label：拷贝 $n 失败"; continue; }
+      cp -R "$CANON/$n" "$dir/" || { warn "${label}：拷贝 $n 失败"; continue; }
     fi
   done
   ok "$label → $dir"
