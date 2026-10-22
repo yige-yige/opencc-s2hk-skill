@@ -6,6 +6,7 @@
 import os
 import re
 import sys
+import hashlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS_DIR = os.path.join(ROOT, "skills")
@@ -115,6 +116,17 @@ for sh in ("install.sh", "uninstall.sh"):
             if m:
                 fail("%s:%d: %r 后紧跟非 ASCII 字符，必须改成 ${...} 形式"
                      % (sh, lineno, m.group(0)))
+
+# ------------------------------------------------------- 共享模块必须保持一致
+cores = []
+for name in sorted(os.listdir(SKILLS_DIR) if os.path.isdir(SKILLS_DIR) else []):
+    p = os.path.join(SKILLS_DIR, name, "scripts", "pptx_core.py")
+    if os.path.isfile(p):
+        with open(p, "rb") as f:
+            cores.append((name, hashlib.sha256(f.read()).hexdigest()))
+if len(cores) > 1 and len({h for _, h in cores}) > 1:
+    fail("各 skill 的 scripts/pptx_core.py 内容不一致，需同步：%s"
+         % ", ".join("%s=%s" % (n, h[:8]) for n, h in cores))
 
 # ------------------------------------------------------------------ 转换自检
 try:

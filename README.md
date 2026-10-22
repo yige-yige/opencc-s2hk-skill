@@ -104,6 +104,37 @@ s2hk-pptx-font in.pptx out.pptx --ea "楷体" --latin "Arial" --mode s2hk
 
 转换模式：`s2hk`（默认，香港用字：裏面/啓用/賬户/衞生）、`s2t`（通用繁体）、`s2tw` `s2twp`（台湾正体）、`t2s` `hk2s` `tw2s`（反向转简体）。
 
+### PPTX 处理范围
+
+默认转换**全部**含文字的部件，不只是正文页：
+
+| scope | 部件 | 说明 |
+|---|---|---|
+| `slides` | 正文页 | |
+| `layouts` / `masters` | 版式 / 母版 | 否则换个版式就冒出简体 |
+| `notes` | 备注页 | 讲者备注 |
+| `diagrams` | **SmartArt** | 文字也存在 `data*.xml`，只改幻灯片缓存的话，在 PowerPoint 里编辑该图形会重新渲染、变回简体 |
+| `charts` / `props` | 图表 / 文件属性 | |
+
+```bash
+s2hk deck.pptx                      # 默认 --scope all
+s2hk deck.pptx --scope slides       # 只转正文页
+s2hk deck.pptx --scope slides,notes # 自选组合
+```
+
+字体名、形状名等属性值**不会**被改动（它们是标识符，改了会坏文件）。
+
+---
+
+## 实现要点
+
+几个容易写错、这里已经处理掉的地方：
+
+- **段落级聚合转换**：PPT 常把一个词拆进多个 `<a:t>`（设计师加粗半个词就会这样）。逐节点转换会让 OpenCC 的词组规则失效 —— `头发` 拆成 `头`+`发` 会得到 `頭發`（错），正确是 `頭髮`。这里按段落拼接后转换再按原长度回填。
+- **Zip Slip 防护**：`.pptx` 是不可信输入，解压前校验每个 zip 条目，拒绝绝对路径与 `../` 穿越，exit 2 报错。
+- **保真重打包**：逐条目沿用原压缩方式/顺序/时间戳。直接 `ZIP_DEFLATED` 重打包会把原本 STORED 的条目重新压缩，对已压缩的 PNG/JPEG 既不省空间又损失保真度。
+- **媒体零改动**：图片/图标/嵌入对象字节级原样搬运。
+
 ---
 
 ## 仓库结构
@@ -113,13 +144,14 @@ s2hk-pptx-font in.pptx out.pptx --ea "楷体" --latin "Arial" --mode s2hk
 ├── skills/                         # ← 官方 CLI 扫描这里（skills/<name>/SKILL.md）
 │   ├── opencc-s2hk/
 │   │   ├── SKILL.md
-│   │   └── scripts/s2hk_convert.py
+│   │   └── scripts/{s2hk_convert.py,pptx_core.py}
 │   └── pptx-s2t-font-convert/
 │       ├── SKILL.md
-│       └── scripts/{convert.py,verify.py}
+│       └── scripts/{convert.py,verify.py,pptx_core.py}
 ├── install.sh                      # 通用安装器（三层覆盖）
 ├── uninstall.sh
 ├── AGENT_SNIPPET.md                # 给不支持 SKILL.md 的 agent 贴的规则片段
+├── tests/test_convert.py           # 端到端回归测试（22 项断言）
 ├── .github/
 │   └── validate_skills.py          # 自检：frontmatter / 脚本语法 / 转换幂等性
 ├── ci/validate.yml                 # GitHub Actions（待启用，见文件头注释）
@@ -127,10 +159,13 @@ s2hk-pptx-font in.pptx out.pptx --ea "楷体" --latin "Arial" --mode s2hk
 └── README.md
 ```
 
-本地跑一遍自检：
+`pptx_core.py` 是两个 skill 共用的处理核心（安全解压 / 处理范围 / 段落级转换 / 保真重打包）。skill 必须自包含不能跨目录 import，所以各存一份，CI 会校验两份内容一致。
+
+本地跑测试与自检：
 
 ```bash
-python3 .github/validate_skills.py
+python3 tests/test_convert.py       # 端到端：跨 run 拆词 / Zip Slip / 保真度 / 幂等性
+python3 .github/validate_skills.py  # 静态检查：frontmatter / 脚本语法 / shell 陷阱
 ```
 
 ---
@@ -151,7 +186,7 @@ python3 .github/validate_skills.py
 5. 技能装太多时 Codex 会因上下文预算省略部分技能，可在 `~/.codex/config.toml` 调 `skills.max_context_tokens`（上限 10000）
 6. 兜底：把 `AGENT_SNIPPET.md` 贴进该 agent 的规则文件，让它直接用 `s2hk` 命令
 
-**PPT 里有几个字没转** → 三种情况属正常：① 文字在图片 / 截图里；② 文字写在母版 / 版式 / 备注页；③ 内嵌 OLE 对象（如嵌入的 Excel）里的文字。
+**PPT 里有几个字没转** → 默认已覆盖版式/母版/备注/SmartArt。若仍有残留，通常是：① 文字在图片 / 截图里（图像内容改不了）；② 内嵌 OLE 对象（如嵌入的 Excel）里的文字。
 
 **繁体里有些字看着像简体（户、峰、兌）** → 这是香港标准用字，不是漏转。**不要**用固定简体字表查残留，会误报；正确校验法是对输出再跑一遍同一 mode，输出不变即已转彻底。
 

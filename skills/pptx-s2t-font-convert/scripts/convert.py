@@ -71,6 +71,13 @@ except ImportError:
 A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 def q(tag): return f"{{{A}}}{tag}"
 
+# PPTX 处理核心与本脚本同目录（skill 自包含，不跨目录 import）
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pptx_core import (  # noqa: E402
+    SCOPES, SCOPE_ORDER, parse_scopes, safe_members,
+    convert_paragraph_aware, repack,
+)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src")
@@ -87,7 +94,20 @@ def main():
                          "then convert to --mode target. Use when the source is already Traditional "
                          "but in a wrong/mixed variant (e.g. fixing 戶/纔 to HK 户/才 via s2hk). "
                          "Only meaningful for s2* target modes.")
+    ap.add_argument("--scope", default="all",
+                    help="Which parts to CONVERT TEXT in. 'all' (default) = slides,layouts,"
+                         "masters,notes,diagrams,charts,props. 'slides' = visible slides only "
+                         "(old behaviour). SmartArt text also lives in diagrams/data*.xml — "
+                         "editing the shape in PowerPoint re-renders from there, so "
+                         "slide-only conversion silently reverts.")
+    ap.add_argument("--font-scope", default="slides",
+                    help="Which parts to APPLY FONTS to. Default 'slides' — rewriting fonts on "
+                         "masters/layouts changes the whole template's look, which is rarely "
+                         "what the user asked for. Use 'all' to include them.")
     args = ap.parse_args()
+
+    text_scopes = parse_scopes(args.scope, parser_error=ap.error)
+    font_scopes = parse_scopes(args.font_scope, parser_error=ap.error)
 
     cc = None
     pre = None
@@ -124,49 +144,60 @@ def main():
 
     tmpdir = tempfile.mkdtemp()
     with zipfile.ZipFile(args.src) as z:
-        names = z.namelist()
-        z.extractall(tmpdir)
+        infos = list(z.infolist())
+        names = [i.filename for i in infos]
+        z.extractall(tmpdir, members=safe_members(z, tmpdir))
 
-    slide_files = [n for n in names
-                   if n.startswith("ppt/slides/slide") and n.endswith(".xml")
-                   and "/_rels/" not in n]
+    def _in(name, scopes):
+        if "/_rels/" in name:
+            return False
+        return any(SCOPES[s](name) for s in scopes)
+
+    text_files = {n for n in names if _in(n, text_scopes)}
+    # 字体只改选定范围（默认仅正文页）：改母版/版式会波及整份模板的观感
+    font_files = {n for n in names if _in(n, font_scopes)}
+    targets = [n for n in names if n in text_files | font_files]
 
     changed_text = 0
+    fallback_paras = 0
     font_sets = 0
-    for name in slide_files:
+    for name in targets:
         path = os.path.join(tmpdir, name)
-        tree = etree.parse(path)
+        if not os.path.isfile(path):
+            continue
+        try:
+            tree = etree.parse(path)
+        except etree.XMLSyntaxError:
+            continue
         root = tree.getroot()
-        if cc is not None:
-            for t in root.iter(q('t')):
-                if t.text:
-                    new = convert_text(t.text)
-                    if new != t.text:
-                        changed_text += 1
-                    t.text = new
-        if args.ea or args.latin:
+        if cc is not None and name in text_files:
+            n, fb = convert_paragraph_aware(root, convert_text)
+            changed_text += n
+            fallback_paras += fb
+        if (args.ea or args.latin) and name in font_files:
             for tag in ('rPr', 'defRPr', 'endParaRPr'):
                 for rpr in root.iter(q(tag)):
                     set_font(rpr)
                     font_sets += 1
         tree.write(path, xml_declaration=True, encoding="UTF-8", standalone=True)
 
-    if os.path.exists(args.out):
-        os.remove(args.out)
-    with zipfile.ZipFile(args.out, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for folder, _, files in os.walk(tmpdir):
-            for f in files:
-                full = os.path.join(folder, f)
-                arc = os.path.relpath(full, tmpdir)
-                zf.write(full, arc)
+    # 保真重打包：沿用原压缩方式/顺序/时间戳，不把 STORED 条目重新压缩
+    repack(args.src, args.out, tmpdir, infos)
     shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print(f"slide xml files processed: {len(slide_files)}  "
-          f"(NOTE: counts all slideN.xml, may exceed the deck's visible page count "
-          f"if the file has orphaned/unreferenced slide XML — this is fine, all are covered)")
+    print(f"xml parts processed: {len(targets)}  "
+          f"(text scope: {','.join(text_scopes)} | font scope: "
+          f"{','.join(font_scopes) if (args.ea or args.latin) else 'n/a'})")
     print(f"text nodes changed: {changed_text}")
+    if fallback_paras:
+        print(f"note: {fallback_paras} paragraph(s) fell back to per-run conversion")
     print(f"font props set    : {font_sets}")
     print(f"output            : {args.out}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ValueError as e:
+        # 不可信输入（Zip Slip 等）：给出可读错误，不抛裸 traceback
+        sys.stderr.write("ERROR: %s\n" % e)
+        sys.exit(2)

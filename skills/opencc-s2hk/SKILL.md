@@ -66,7 +66,28 @@ python3 scripts/s2hk_convert.py deck.pptx -o deck_hk.pptx
 
 # 4) 已是繁体但用字混乱 → 规整为香港用字
 python3 scripts/s2hk_convert.py already_trad.pptx --mode s2hk --via-simplified
+
+# 5) 只转正文页，不碰版式/母版/备注（旧行为）
+python3 scripts/s2hk_convert.py deck.pptx --scope slides
 ```
+
+## PPTX 处理范围 `--scope`
+
+默认 `all`，覆盖以下部件。**不要**随意缩小范围，否则会出现「正文页是繁体、换个版式又冒出简体」。
+
+| scope | 对应部件 | 为什么重要 |
+|---|---|---|
+| `slides` | `ppt/slides/` | 正文页 |
+| `layouts` | `ppt/slideLayouts/` | 版式上的标题/占位文字，换版式就会露出来 |
+| `masters` | `slideMasters` / `notesMasters` / `handoutMasters` | 母版级文字 |
+| `notes` | `ppt/notesSlides/` | 备注页（讲者备注） |
+| `diagrams` | `ppt/diagrams/` | **SmartArt**：文字同时存在于 `data*.xml`，只改幻灯片缓存的话，用户在 PowerPoint 里一编辑该图形就会重新渲染、变回简体 |
+| `charts` | `ppt/charts/` | 图表标题与轴标签 |
+| `props` | `docProps/core.xml` | 文件属性里的标题/主题 |
+
+用法：`--scope all`（默认）/ `--scope slides` / `--scope slides,notes`。
+
+**不会被改动的**：字体名（`腾讯体`/`宋体`）、形状名、主题名等属性值 —— 这些是标识符，改了会破坏文件。
 
 ## 转换模式 `--mode`
 
@@ -118,5 +139,11 @@ residue = [t for t in all_output_texts if cc.convert(t) != t]
 
 - PPTX 中**图片 / 截图 / 视频封面里的文字**属图像内容，无法编辑，保持原状。
 - OpenCC 只做**字形**转换，不改用词习惯（「程序」不会自动变成港式「程式」）。用词本地化需另行处理。
-- 脚本只处理 `ppt/slides/slideN.xml`；母版（slideMaster）、版式（slideLayout）、备注页（notesSlide）、图表内嵌文字**不在处理范围**。若用户的文字写在母版或备注里，需另行说明。
-- `.docx` / `.pdf` / `.xlsx` 等二进制格式**不支持**，脚本会以 exit 2 报错。若用户拿来的是 Word，需先导出为 `.md` / `.txt`，或改用专门的 docx 工具链。
+- **内嵌 OLE 对象**（如嵌入的 Excel 表）内部文字不在处理范围。
+- `.docx` / `.pdf` / `.xlsx` 等二进制格式**不支持**，脚本会以 exit 2 报错。若用户拿来的是 Word，需先导出为 `.md` / `.txt`。
+- 极少数情况下（`s2twp` 等会改变字数的用词替换），若某段落转换后长度变化，该段会回退为逐 run 转换并在输出中提示 `fell back to per-run conversion`。
+
+## 安全
+
+- `.pptx` 属不可信输入，脚本会在解压前校验每个 zip 条目，拒绝绝对路径与 `../` 路径穿越（Zip Slip），以 exit 2 报错。
+- 输出始终写入**新文件**，不覆盖源文件。

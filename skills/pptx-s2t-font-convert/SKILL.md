@@ -102,7 +102,13 @@ Both bundled scripts now fail with an actionable message (naming the exact pip c
 - Repack must preserve the zip structure; walk the temp dir and re-zip with ZIP_DEFLATED. Keep `[Content_Types].xml` and rels untouched.
 - Always write a NEW output file, never overwrite the source.
 - **`font props set: 0` is NOT necessarily a failure.** Fonts are written by upserting into EXISTING `<a:rPr>` / `<a:defRPr>` / `<a:endParaRPr>` elements. A run that never had any explicit character formatting has NO `rPr` at all, so there is nothing to upsert into and it silently inherits the master/theme font. Verified: a deck with 0 `rPr` reports `font props set: 0` and keeps its original fonts; after giving one run an explicit size (creating an `rPr`), the same command reports `font props set: 1` and correctly writes `<a:ea typeface="楷体"/>` + `<a:latin typeface="Arial"/>`. If the user demands EVERY run change font, the script must be extended to create `rPr` on bare runs — flag this instead of silently reporting success.
-- **Scope is slides ONLY.** Only `ppt/slides/slideN.xml` is processed. Text living in the slide **master** (`slideMasters/`), **layouts** (`slideLayouts/`), **notes pages** (`notesSlides/`) or inside **chart XML** is NOT converted and NOT re-fonted. If the user reports "有几个字没转", check whether that text sits on the master/layout/notes rather than assuming a conversion bug.
+- **Scope is configurable now (`--scope` / `--font-scope`).** Text conversion defaults to
+  `all` = slides + slideLayouts + slideMasters/notesMasters + notesSlides + diagrams
+  (SmartArt) + charts + docProps. **Font** rewriting defaults to `slides` only, because
+  restyling masters/layouts changes the whole template's look — pass `--font-scope all`
+  only if the user explicitly wants that. SmartArt matters: its text also lives in
+  `ppt/diagrams/data*.xml`, and editing the shape in PowerPoint re-renders from there,
+  so a slides-only pass silently reverts.
 - **"slides processed" counts slideN.xml files, NOT the deck's visible page count.** A pptx can carry orphaned/unreferenced slide XML (not in presentation.xml sldIdLst), so the number may exceed the real page count (e.g. reports 5 but the deck shows 2). Processing all of them is intentional/safe. To get the TRUE visible page count, open with python-pptx and use `len(prs.slides)`. Don't be alarmed by the mismatch; just verify visible pages in QA.
 
 ## Verification

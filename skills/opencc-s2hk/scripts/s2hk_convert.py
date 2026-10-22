@@ -82,11 +82,12 @@ def _bootstrap(mods):
 
 _bootstrap(("opencc", "lxml"))
 
-A = "http://schemas.openxmlformats.org/drawingml/2006/main"
-
-
-def q(tag):
-    return "{%s}%s" % (A, tag)
+# PPTX 处理核心与本脚本同目录（skill 自包含，不跨目录 import）
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pptx_core import (  # noqa: E402
+    A, q, SCOPES, SCOPE_ORDER, parse_scopes, in_scope,
+    safe_members, convert_paragraph_aware, convert_props, repack,
+)
 
 
 def build_converter(mode, via_simplified):
@@ -149,7 +150,7 @@ def convert_text_file(src, out, convert):
     return out
 
 
-def convert_pptx_file(src, out, convert):
+def convert_pptx_file(src, out, convert, scopes=None, verbose=True):
     import shutil
     import zipfile
     import tempfile
@@ -158,49 +159,72 @@ def convert_pptx_file(src, out, convert):
     if out is None:
         base, ext = os.path.splitext(src)
         out = base + ".s2hk" + ext
+    if scopes is None:
+        scopes = list(SCOPE_ORDER)
+
+    def wanted(name):
+        if "/_rels/" in name:
+            return None
+        for s in scopes:
+            if SCOPES[s](name):
+                return s
+        return None
 
     tmpdir = tempfile.mkdtemp()
+    stats = dict.fromkeys(SCOPE_ORDER, 0)
+    changed_text = 0
+    fallback_paras = 0
     try:
         with zipfile.ZipFile(src) as z:
-            names = z.namelist()
-            z.extractall(tmpdir)
+            members = safe_members(z, tmpdir)
+            infos = list(z.infolist())
+            z.extractall(tmpdir, members=members)
 
-        slide_files = [
-            n for n in names
-            if n.startswith("ppt/slides/slide")
-            and n.endswith(".xml")
-            and "/_rels/" not in n
-        ]
-
-        changed_text = 0
-        for name in slide_files:
+        for name in [i.filename for i in infos]:
+            scope = wanted(name)
+            if scope is None:
+                continue
             path = os.path.join(tmpdir, name)
-            tree = etree.parse(path)
+            if not os.path.isfile(path):
+                continue
+            try:
+                tree = etree.parse(path)
+            except etree.XMLSyntaxError:
+                continue
             root = tree.getroot()
-            for t in root.iter(q("t")):
-                if t.text:
-                    new = convert(t.text)
-                    if new != t.text:
-                        changed_text += 1
-                    t.text = new
-            tree.write(path, xml_declaration=True, encoding="UTF-8", standalone=True)
 
-        if os.path.exists(out):
-            os.remove(out)
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-            for folder, _, files in os.walk(tmpdir):
-                for f in files:
-                    full = os.path.join(folder, f)
-                    arc = os.path.relpath(full, tmpdir)
-                    zf.write(full, arc)
+            if scope == "props":
+                n = convert_props(root, convert,
+                                  lambda el: etree.QName(el).localname)
+                if n:
+                    changed_text += n
+                    stats[scope] += 1
+                    tree.write(path, xml_declaration=True, encoding="UTF-8",
+                               standalone=True)
+                continue
+
+            n, fb = convert_paragraph_aware(root, convert)
+            fallback_paras += fb
+            stats[scope] += 1
+            if n:
+                changed_text += n
+                tree.write(path, xml_declaration=True, encoding="UTF-8",
+                           standalone=True)
+
+        repack(src, out, tmpdir, infos)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("pptx converted (fonts/layout/images/tables preserved)")
-    print("  input : %s" % src)
-    print("  output: %s" % out)
-    print("  slides processed  : %d" % len(slide_files))
-    print("  text nodes changed: %d" % changed_text)
+    if verbose:
+        print("pptx converted (fonts/layout/images/tables preserved)")
+        print("  input : %s" % src)
+        print("  output: %s" % out)
+        print("  parts processed   : %s" % ", ".join(
+            "%s=%d" % (s, stats[s]) for s in SCOPE_ORDER if stats[s]))
+        print("  text nodes changed: %d" % changed_text)
+        if fallback_paras:
+            print("  note: %d paragraph(s) fell back to per-run conversion "
+                  "(length changed after conversion)" % fallback_paras)
     return out
 
 
@@ -222,7 +246,20 @@ def main():
                     help="First normalize existing Traditional variants back to Simplified "
                          "(t2s), then convert to --mode. Use to fix wrong/mixed Traditional "
                          "(e.g. 戶->户, 纔->才) into consistent HK forms.")
+    ap.add_argument("--scope", default="all",
+                    help="PPTX only. Which parts to convert. 'all' (default) covers "
+                         "slides,layouts,masters,notes,diagrams,charts,props. "
+                         "'slides' = visible slides only (old behaviour). "
+                         "Or a comma list, e.g. --scope slides,notes. "
+                         "NOTE: 'diagrams' (SmartArt) matters — SmartArt text lives in "
+                         "diagrams/data*.xml too, and editing the shape in PowerPoint "
+                         "re-renders from there, reverting slide-only conversions.")
     args = ap.parse_args()
+
+    if args.scope.strip().lower() == "all":
+        scopes = list(SCOPE_ORDER)
+    else:
+        scopes = parse_scopes(args.scope, parser_error=ap.error)
 
     try:
         convert = build_converter(args.mode, args.via_simplified)
@@ -244,10 +281,13 @@ def main():
     ext = os.path.splitext(args.input)[1].lower()
     if ext == ".pptx":
         try:
-            convert_pptx_file(args.input, args.output, convert)
+            convert_pptx_file(args.input, args.output, convert, scopes=scopes)
         except ImportError:
             sys.stderr.write("ERROR: lxml required for .pptx. Run: pip install lxml\n")
             sys.exit(1)
+        except ValueError as e:
+            sys.stderr.write("ERROR: %s\n" % e)
+            sys.exit(2)
     else:
         convert_text_file(args.input, args.output, convert)
 

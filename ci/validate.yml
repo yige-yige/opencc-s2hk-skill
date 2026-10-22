@@ -39,6 +39,9 @@ jobs:
       - name: 校验 skill 与脚本
         run: python .github/validate_skills.py
 
+      - name: 端到端回归测试
+        run: python tests/test_convert.py
+
       - name: 命令行冒烟测试
         run: |
           out="$(python skills/opencc-s2hk/scripts/s2hk_convert.py --text '用户启用多租户数据隔离机制')"
