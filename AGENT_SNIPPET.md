@@ -26,9 +26,13 @@
     ~/.local/bin/s2hk deck.pptx -o out.pptx --mode s2hk
     ~/.local/bin/s2hk old_trad.pptx --via-simplified   # 已是繁体但 戶/纔/裡 用字混乱时规整
 
-PPTX 同时要改字体时用：
+PPTX 同时要改字体时，加参数即可（不需要换命令）：
 
-    ~/.local/bin/s2hk-pptx-font in.pptx out.pptx --ea "楷体" --latin "Arial" --mode s2hk
+    ~/.local/bin/s2hk in.pptx -o out.pptx --ea "楷体" --latin "Arial"
+
+转换后想确认质量：
+
+    ~/.local/bin/s2hk in.pptx -o out.pptx --verify   # 结构/字体/全文残留，exit 3 表示未通过
 
 模式：`s2hk`（默认，香港用字：裏面/啓用/賬户/衞生）、`s2t`（通用繁体）、
 `s2tw` `s2twp`（台湾正体）、`t2s` `hk2s` `tw2s`（反向转简体）。

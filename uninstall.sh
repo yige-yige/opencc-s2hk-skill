@@ -2,7 +2,7 @@
 # 卸载简体 → 香港繁体 Skill：清理所有 agent 目录、全局命令与独立运行环境
 set -uo pipefail
 
-SKILL_NAMES=(opencc-s2hk pptx-s2t-font-convert)
+SKILL_NAMES=(opencc-s2hk pptx-s2t-font-convert)   # 后者为 v1 遗留，一并清理
 CANON="$HOME/.agents/skills"
 XDG_CANON="${XDG_CONFIG_HOME:-$HOME/.config}/agents/skills"
 BIN_DIR="$HOME/.local/bin"

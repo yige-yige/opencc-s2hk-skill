@@ -186,3 +186,113 @@ def repack(src, out, tmpdir, infos):
             ni.create_system = info.create_system
             zf.writestr(ni, data)
     return out
+
+
+# --------------------------------------------------------------------------
+# 质检
+#
+# 残留检测必须用「二次转换法」，不能用固定简体字表：香港繁体会合理保留一些
+# 看起来像简体的字（户、峰、兌），固定字表必然误报。
+def _iter_runs(shapes, acc):
+    for sh in shapes:
+        if sh.shape_type == 6:          # GROUP
+            _iter_runs(sh.shapes, acc)
+        if getattr(sh, "has_text_frame", False):
+            for p in sh.text_frame.paragraphs:
+                for r in p.runs:
+                    acc.append(r)
+        if getattr(sh, "has_table", False):
+            for row in sh.table.rows:
+                for c in row.cells:
+                    for p in c.text_frame.paragraphs:
+                        for r in p.runs:
+                            acc.append(r)
+    return acc
+
+
+def font_profile(path):
+    """统计 (latin, ea) 字体组合的分布，用于比对字体是否被意外改动。"""
+    from pptx import Presentation
+    rpr = q("rPr")
+    latin, ea = q("latin"), q("ea")
+    prof = {}
+    for s in Presentation(path).slides:
+        for r in _iter_runs(s.shapes, []):
+            if not r.text.strip():
+                continue
+            el = r._r.find(rpr)
+            if el is None:
+                continue
+            la, e = el.find(latin), el.find(ea)
+            key = (la.get("typeface") if la is not None else None,
+                   e.get("typeface") if e is not None else None)
+            prof[key] = prof.get(key, 0) + 1
+    return prof
+
+
+def full_text_residue(path, mode):
+    """全文（含版式/母版/备注/SmartArt）残留检查，返回 [(部件, 文本, 差异)]。"""
+    from lxml import etree
+    from opencc import OpenCC
+    cc = OpenCC(mode)
+    out = []
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            if not name.endswith(".xml") or "/_rels/" in name:
+                continue
+            try:
+                root = etree.fromstring(z.read(name))
+            except Exception:
+                continue
+            for t in root.iter(q("t")):
+                if not t.text or not t.text.strip():
+                    continue
+                conv = cc.convert(t.text)
+                if conv != t.text:
+                    diff = " ".join("%s→%s" % (a, b)
+                                    for a, b in zip(t.text, conv) if a != b)
+                    out.append((name, t.text.strip()[:40], diff))
+    return out
+
+
+def verify(src, out, mode, expect_font_identical=True):
+    """对转换结果做结构/字体/残留三项质检，返回 (report_dict, ok)。"""
+    from pptx import Presentation
+    report = {}
+    ok = True
+
+    ps, po = Presentation(src), Presentation(out)
+    report["slides_src"] = len(ps.slides)
+    report["slides_out"] = len(po.slides)
+    if report["slides_src"] != report["slides_out"]:
+        ok = False
+
+    runs_src = sum(len(_iter_runs(s.shapes, [])) for s in ps.slides)
+    runs_out = sum(len(_iter_runs(s.shapes, [])) for s in po.slides)
+    report["runs_src"], report["runs_out"] = runs_src, runs_out
+    if runs_src != runs_out:
+        ok = False
+
+    identical = font_profile(src) == font_profile(out)
+    report["font_identical"] = identical
+    # 只有在「本次没打算改字体」时，字体变化才算问题
+    if expect_font_identical and not identical:
+        ok = False
+
+    with zipfile.ZipFile(src) as a, zipfile.ZipFile(out) as b:
+        media = [n for n in a.namelist() if n.startswith("ppt/media/")]
+        same = (set(media) <= set(b.namelist())
+                and all(a.read(n) == b.read(n) for n in media))
+        report["media_count"] = len(media)
+        report["media_identical"] = same
+        report["entry_order_identical"] = a.namelist() == b.namelist()
+    if not same:
+        ok = False
+
+    resid = full_text_residue(out, mode)
+    report["residue"] = resid
+    report["residue_count"] = len(resid)
+    if resid:
+        ok = False
+
+    return report, ok

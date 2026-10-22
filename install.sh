@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
     --list) MODE="list"; shift ;;
     --link) LINK=1; shift ;;
     --all) FORCE_ALL=1; shift ;;
-    --core-only) CORE_ONLY=1; shift ;;
+    --core-only) CORE_ONLY=1; shift ;;   # v2 起只有一个 skill，保留参数以兼容旧调用
     --no-deps) WITH_DEPS=0; shift ;;
     --add-path) ADD_PATH=1; shift ;;
     -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
@@ -54,6 +54,18 @@ backup_away() {
   _rel="$(printf '%s' "${_src#$HOME/}" | tr '/' '_')"
   mkdir -p "$BACKUP_ROOT" 2>/dev/null || return 1
   mv "$_src" "$BACKUP_ROOT/$_rel" 2>/dev/null
+}
+
+# v2.0 起 pptx-s2t-font-convert 已并入 opencc-s2hk（字体能力变成 --ea/--latin）。
+# 留着旧 skill 会让 agent 在两个重叠技能间二选一，必须主动移除。
+RETIRED_SKILLS=(pptx-s2t-font-convert)
+retire_old_skills() {
+  for _r in "${RETIRED_SKILLS[@]}"; do
+    if [ -e "$1/$_r" ] || [ -L "$1/$_r" ]; then
+      backup_away "$1/$_r" \
+        && warn "已移除旧 skill ${_r}（功能已并入 opencc-s2hk）"
+    fi
+  done
 }
 
 # 清理旧版安装器遗留在 skills 目录里的备份（它们会造成技能重复）
@@ -91,7 +103,6 @@ AGENT_MAP=(
 )
 
 SKILL_NAMES=(opencc-s2hk)
-[ "$CORE_ONLY" -eq 0 ] && SKILL_NAMES+=(pptx-s2t-font-convert)
 for n in "${SKILL_NAMES[@]}"; do
   [ -f "$SKILLS_SRC/$n/SKILL.md" ] || die "安装包不完整，缺少 skills/$n/SKILL.md"
 done
@@ -182,6 +193,7 @@ say ""
 say "[2/4] 安装到标准共享目录"
 mkdir -p "$CANON" || die "无法创建 $CANON"
 sweep_legacy_backups "$CANON"
+retire_old_skills "$CANON"
 for n in "${SKILL_NAMES[@]}"; do
   if [ -e "$CANON/$n" ] || [ -L "$CANON/$n" ]; then
     backup_away "$CANON/$n" && warn "$n 已存在，旧版备份到 $BACKUP_ROOT"
@@ -208,6 +220,7 @@ while [ $i -lt ${#TARGETS[@]} ]; do
   [ "$dir" = "$CANON" ] && continue
   mkdir -p "$dir" 2>/dev/null || { warn "${label}：无法创建 ${dir}，跳过"; continue; }
   sweep_legacy_backups "$dir"
+  retire_old_skills "$dir"
   for n in "${SKILL_NAMES[@]}"; do
     if [ -e "$dir/$n" ] || [ -L "$dir/$n" ]; then
       backup_away "$dir/$n" && warn "${label}：旧版 $n 已备份"
@@ -237,13 +250,21 @@ chmod +x "$BIN_DIR/s2hk"
 ok "s2hk → $BIN_DIR/s2hk"
 
 if [ "$CORE_ONLY" -eq 0 ]; then
+  # v1 的 s2hk-pptx-font 保留为薄包装，老用户的脚本/习惯不会突然失效
   cat > "$BIN_DIR/s2hk-pptx-font" <<EOF
 #!/bin/sh
-# PPTX 繁简转换 + 中英文字体统一。用法：s2hk-pptx-font in.pptx out.pptx --ea 楷体 --latin Arial --mode s2hk
-exec "$RUN_PY" "$CANON/pptx-s2t-font-convert/scripts/convert.py" "\$@"
+# [已废弃] v2 起字体能力并入主命令，请改用：
+#   s2hk in.pptx -o out.pptx --ea 楷体 --latin Arial
+# 本包装仅为兼容 v1 的调用方式（位置参数 in out）。
+echo "注意：s2hk-pptx-font 已废弃，请改用 s2hk <in> -o <out> --ea 楷体 --latin Arial" >&2
+if [ \$# -ge 2 ] && [ "\${2#-}" = "\$2" ]; then
+  _in="\$1"; _out="\$2"; shift 2
+  exec "$RUN_PY" "$CANON/opencc-s2hk/scripts/s2hk_convert.py" "\$_in" -o "\$_out" "\$@"
+fi
+exec "$RUN_PY" "$CANON/opencc-s2hk/scripts/s2hk_convert.py" "\$@"
 EOF
   chmod +x "$BIN_DIR/s2hk-pptx-font"
-  ok "s2hk-pptx-font → $BIN_DIR/s2hk-pptx-font"
+  ok "s2hk-pptx-font → 兼容包装（已废弃，转发到 s2hk）"
 fi
 
 case ":$PATH:" in

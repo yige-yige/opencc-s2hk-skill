@@ -23,9 +23,16 @@ import subprocess
 from collections import Counter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPT = os.path.join(ROOT, "skills", "opencc-s2hk", "scripts", "s2hk_convert.py")
-FONT_SCRIPT = os.path.join(ROOT, "skills", "pptx-s2t-font-convert", "scripts", "convert.py")
+SCRIPTS_DIR = os.path.join(ROOT, "skills", "opencc-s2hk", "scripts")
+SCRIPT = os.path.join(SCRIPTS_DIR, "s2hk_convert.py")
 PY = sys.executable
+sys.path.insert(0, SCRIPTS_DIR)
+
+
+def font_pairs(path):
+    """返回文件中出现过的 (latin, ea) 字体组合集合。"""
+    from pptx_core import font_profile
+    return set(font_profile(path).keys())
 
 passed = 0
 failed = []
@@ -136,9 +143,10 @@ def main():
         check("路径穿越" in r.stderr or "绝对路径" in r.stderr,
               "给出可读的拒绝原因", r.stderr[:120])
         check(not os.path.exists(pwned), "没有文件逃逸到目标目录之外")
-        r = run([FONT_SCRIPT, evil, os.path.join(tmp, "evil2.pptx"), "--mode", "s2hk"])
+        r = run([SCRIPT, evil, "-o", os.path.join(tmp, "evil2.pptx"),
+                 "--ea", "楷体"])
         check(r.returncode == 2 and "Traceback" not in r.stderr,
-              "字体版同样拒绝且无裸 traceback", "exit=%d" % r.returncode)
+              "带字体参数时同样拒绝且无裸 traceback", "exit=%d" % r.returncode)
 
         print("\n[3] 处理范围（版式/母版/备注）")
         r = run([SCRIPT, src, "-o", out])
@@ -211,6 +219,52 @@ def main():
         r = run([SCRIPT, "--text", "用户启用多租户数据隔离机制"])
         check(r.stdout.strip() == "用户啓用多租户數據隔離機制",
               "内联转换结果正确", r.stdout.strip())
+
+        print("\n[8] 字体能力（已从 pptx-s2t-font-convert 并入）")
+        fout = os.path.join(tmp, "font.pptx")
+        r = run([SCRIPT, src, "-o", fout, "--ea", "楷体", "--latin", "Arial"])
+        check(r.returncode == 0, "转换+改字体成功", r.stderr[:200])
+        check("font props set" in r.stdout, "输出包含字体统计")
+        pairs = font_pairs(fout)
+        check(("Arial", "楷体") in pairs, "字体已写入 latin=Arial / ea=楷体",
+              "实际: %s" % list(pairs)[:3])
+        check(residue(fout) == 0, "改字体的同时文字仍完整转换")
+
+        only = os.path.join(tmp, "fontonly.pptx")
+        r = run([SCRIPT, src, "-o", only, "--mode", "none", "--ea", "楷体"])
+        check(r.returncode == 0, "--mode none 仅改字体")
+        check(slide_texts(only) == slide_texts(src), "--mode none 未改动任何文字")
+        r = run([SCRIPT, src, "-o", os.path.join(tmp, "x.pptx"), "--mode", "none"])
+        check(r.returncode == 2, "--mode none 缺字体参数时报错", "exit=%d" % r.returncode)
+
+        print("\n[9] 内置质检 --verify")
+        r = run([SCRIPT, src, "-o", os.path.join(tmp, "v.pptx"), "--verify"])
+        check(r.returncode == 0 and "result            : PASS" in r.stdout,
+              "纯转换质检 PASS", r.stdout[-200:])
+        check("residue (full doc): 0" in r.stdout, "质检报告显示全文零残留")
+        r = run([SCRIPT, src, "-o", os.path.join(tmp, "vf.pptx"),
+                 "--verify", "--ea", "楷体"])
+        check("font profile same : False" in r.stdout,
+              "改字体时如实报告字体分布已变")
+        check(r.returncode == 0 and "result            : PASS" in r.stdout,
+              "改字体不应被判为质检失败（v1 的常见误导）")
+
+        print("\n[10] --dry-run 与 --json")
+        d = os.path.join(tmp, "dry.pptx")
+        r = run([SCRIPT, src, "-o", d, "--dry-run"])
+        check(r.returncode == 0 and not os.path.exists(d),
+              "--dry-run 不写出文件")
+        r = run([SCRIPT, src, "-o", os.path.join(tmp, "j.pptx"),
+                 "--verify", "--json"])
+        import json as _json
+        try:
+            data = _json.loads(r.stdout)
+            check(data["verify"]["residue_count"] == 0 and data["verify_ok"],
+                  "--json 输出可解析且质检通过")
+            check(data["mode"] == "s2hk" and "slides" in data["scope"],
+                  "--json 含 mode 与 scope")
+        except ValueError:
+            check(False, "--json 输出是合法 JSON", r.stdout[:200])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

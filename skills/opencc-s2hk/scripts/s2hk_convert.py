@@ -86,7 +86,7 @@ _bootstrap(("opencc", "lxml"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pptx_core import (  # noqa: E402
     A, q, SCOPES, SCOPE_ORDER, parse_scopes, in_scope,
-    safe_members, convert_paragraph_aware, convert_props, repack,
+    safe_members, convert_paragraph_aware, convert_props, repack, verify,
 )
 
 
@@ -150,7 +150,37 @@ def convert_text_file(src, out, convert):
     return out
 
 
-def convert_pptx_file(src, out, convert, scopes=None, verbose=True):
+def make_font_setter(etree, ea, latin):
+    """返回把 <a:rPr> 的字体改写成指定值的函数；都为 None 时返回 None。
+
+    只改 typeface 属性，保留 panose/charset 等其余属性。
+    缺失的 latin/ea/cs 元素会被创建，并插到 <a:sym> 之前以维持合法子元素顺序。
+    """
+    if not ea and not latin:
+        return None
+
+    def set_font(rpr):
+        def upsert(tagname, typeface):
+            if typeface is None:
+                return
+            el = rpr.find(q(tagname))
+            if el is None:
+                el = etree.SubElement(rpr, q(tagname))
+                el.set("typeface", typeface)
+                sym = rpr.find(q("sym"))
+                if sym is not None:
+                    sym.addprevious(el)
+            else:
+                el.set("typeface", typeface)
+        upsert("latin", latin)
+        upsert("ea", ea)
+        upsert("cs", latin)
+
+    return set_font
+
+
+def convert_pptx_file(src, out, convert, scopes=None, verbose=True,
+                      ea=None, latin=None, font_scopes=None):
     import shutil
     import zipfile
     import tempfile
@@ -161,8 +191,12 @@ def convert_pptx_file(src, out, convert, scopes=None, verbose=True):
         out = base + ".s2hk" + ext
     if scopes is None:
         scopes = list(SCOPE_ORDER)
+    if font_scopes is None:
+        font_scopes = ["slides"]
 
-    def wanted(name):
+    set_font = make_font_setter(etree, ea, latin)
+
+    def text_scope_of(name):
         if "/_rels/" in name:
             return None
         for s in scopes:
@@ -174,6 +208,7 @@ def convert_pptx_file(src, out, convert, scopes=None, verbose=True):
     stats = dict.fromkeys(SCOPE_ORDER, 0)
     changed_text = 0
     fallback_paras = 0
+    font_sets = 0
     try:
         with zipfile.ZipFile(src) as z:
             members = safe_members(z, tmpdir)
@@ -181,8 +216,9 @@ def convert_pptx_file(src, out, convert, scopes=None, verbose=True):
             z.extractall(tmpdir, members=members)
 
         for name in [i.filename for i in infos]:
-            scope = wanted(name)
-            if scope is None:
+            scope = text_scope_of(name) if convert is not None else None
+            do_font = set_font is not None and in_scope(name, font_scopes)
+            if scope is None and not do_font:
                 continue
             path = os.path.join(tmpdir, name)
             if not os.path.isfile(path):
@@ -192,6 +228,7 @@ def convert_pptx_file(src, out, convert, scopes=None, verbose=True):
             except etree.XMLSyntaxError:
                 continue
             root = tree.getroot()
+            dirty = False
 
             if scope == "props":
                 n = convert_props(root, convert,
@@ -199,15 +236,23 @@ def convert_pptx_file(src, out, convert, scopes=None, verbose=True):
                 if n:
                     changed_text += n
                     stats[scope] += 1
-                    tree.write(path, xml_declaration=True, encoding="UTF-8",
-                               standalone=True)
-                continue
+                    dirty = True
+            elif scope is not None:
+                n, fb = convert_paragraph_aware(root, convert)
+                fallback_paras += fb
+                stats[scope] += 1
+                if n:
+                    changed_text += n
+                    dirty = True
 
-            n, fb = convert_paragraph_aware(root, convert)
-            fallback_paras += fb
-            stats[scope] += 1
-            if n:
-                changed_text += n
+            if do_font:
+                for tag in ("rPr", "defRPr", "endParaRPr"):
+                    for rpr in root.iter(q(tag)):
+                        set_font(rpr)
+                        font_sets += 1
+                        dirty = True
+
+            if dirty:
                 tree.write(path, xml_declaration=True, encoding="UTF-8",
                            standalone=True)
 
@@ -216,12 +261,20 @@ def convert_pptx_file(src, out, convert, scopes=None, verbose=True):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     if verbose:
-        print("pptx converted (fonts/layout/images/tables preserved)")
+        print("pptx converted (layout/images/tables preserved)")
         print("  input : %s" % src)
         print("  output: %s" % out)
-        print("  parts processed   : %s" % ", ".join(
-            "%s=%d" % (s, stats[s]) for s in SCOPE_ORDER if stats[s]))
-        print("  text nodes changed: %d" % changed_text)
+        if convert is not None:
+            print("  parts processed   : %s" % (", ".join(
+                "%s=%d" % (s, stats[s]) for s in SCOPE_ORDER if stats[s]) or "none"))
+            print("  text nodes changed: %d" % changed_text)
+        if set_font is not None:
+            print("  font props set    : %d  (scope: %s)"
+                  % (font_sets, ",".join(font_scopes)))
+            if font_sets == 0:
+                print("  note: 0 font props set — runs without any explicit "
+                      "character formatting have no <a:rPr> to write into; "
+                      "they inherit the theme font. This is not an error.")
         if fallback_paras:
             print("  note: %d paragraph(s) fell back to per-run conversion "
                   "(length changed after conversion)" % fallback_paras)
@@ -240,8 +293,9 @@ def main():
                     help="Convert this inline string and print the result to stdout.")
     ap.add_argument("--mode", default="s2hk",
                     choices=["s2hk", "s2t", "s2tw", "s2twp",
-                             "t2s", "hk2s", "tw2s", "tw2sp"],
-                    help="OpenCC conversion mode. Default: s2hk (Hong Kong Traditional).")
+                             "t2s", "hk2s", "tw2s", "tw2sp", "none"],
+                    help="OpenCC conversion mode. Default: s2hk (Hong Kong Traditional). "
+                         "Use 'none' for a font-only pass (requires --ea/--latin).")
     ap.add_argument("--via-simplified", action="store_true",
                     help="First normalize existing Traditional variants back to Simplified "
                          "(t2s), then convert to --mode. Use to fix wrong/mixed Traditional "
@@ -254,18 +308,41 @@ def main():
                          "NOTE: 'diagrams' (SmartArt) matters — SmartArt text lives in "
                          "diagrams/data*.xml too, and editing the shape in PowerPoint "
                          "re-renders from there, reverting slide-only conversions.")
+    ap.add_argument("--ea", default=None, metavar="FONT",
+                    help="PPTX only. Chinese/East-Asian font name to apply, e.g. 楷体. "
+                         "Omit to leave fonts untouched.")
+    ap.add_argument("--latin", default=None, metavar="FONT",
+                    help="PPTX only. Latin/English font name to apply (also used for "
+                         "<a:cs>), e.g. Arial. Omit to leave fonts untouched.")
+    ap.add_argument("--font-scope", default="slides",
+                    help="Which parts to apply --ea/--latin to. Default 'slides' — "
+                         "restyling masters/layouts changes the whole template's look, "
+                         "which is rarely what was asked for. Use 'all' to include them.")
+    ap.add_argument("--verify", action="store_true",
+                    help="PPTX only. After converting, check structure, font profile "
+                         "and leftover Simplified text (re-convert method), then report.")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Report what would change without writing the output file.")
+    ap.add_argument("--json", action="store_true",
+                    help="Emit a machine-readable JSON summary on stdout.")
     args = ap.parse_args()
+
+    if args.mode == "none" and not (args.ea or args.latin):
+        ap.error("--mode none 表示不转换文字，此时必须给出 --ea 或 --latin")
 
     if args.scope.strip().lower() == "all":
         scopes = list(SCOPE_ORDER)
     else:
         scopes = parse_scopes(args.scope, parser_error=ap.error)
+    font_scopes = parse_scopes(args.font_scope, parser_error=ap.error)
 
-    try:
-        convert = build_converter(args.mode, args.via_simplified)
-    except ImportError:
-        sys.stderr.write("ERROR: opencc not installed. Run: pip install opencc\n")
-        sys.exit(1)
+    convert = None
+    if args.mode != "none":
+        try:
+            convert = build_converter(args.mode, args.via_simplified)
+        except ImportError:
+            sys.stderr.write("ERROR: opencc not installed. Run: pip install opencc\n")
+            sys.exit(1)
 
     if args.text is not None:
         convert_inline_text(args.text, convert)
@@ -280,14 +357,68 @@ def main():
 
     ext = os.path.splitext(args.input)[1].lower()
     if ext == ".pptx":
+        import tempfile
+        import shutil
+        real_out = args.output
+        if real_out is None:
+            base, e = os.path.splitext(args.input)
+            real_out = base + ".s2hk" + e
+        # dry-run 仍需真正跑一遍才能给出准确计数，只是写到临时文件后丢弃
+        tmp_out = None
+        if args.dry_run:
+            tmp_out = os.path.join(tempfile.mkdtemp(), os.path.basename(real_out))
         try:
-            convert_pptx_file(args.input, args.output, convert, scopes=scopes)
+            written = convert_pptx_file(
+                args.input, tmp_out or real_out, convert,
+                scopes=scopes, verbose=not args.json,
+                ea=args.ea, latin=args.latin, font_scopes=font_scopes)
         except ImportError:
             sys.stderr.write("ERROR: lxml required for .pptx. Run: pip install lxml\n")
             sys.exit(1)
         except ValueError as e:
             sys.stderr.write("ERROR: %s\n" % e)
             sys.exit(2)
+
+        summary = {"input": args.input, "output": real_out, "mode": args.mode,
+                   "scope": scopes, "dry_run": bool(args.dry_run)}
+        exit_code = 0
+
+        if args.verify and args.mode != "none":
+            try:
+                report, ok = verify(args.input, written, args.mode,
+                                    expect_font_identical=not (args.ea or args.latin))
+            except ImportError:
+                sys.stderr.write("ERROR: --verify requires python-pptx. "
+                                 "Run: pip install python-pptx\n")
+                sys.exit(1)
+            summary["verify"] = report
+            summary["verify_ok"] = ok
+            if not args.json:
+                print("verify")
+                print("  slides            : %d → %d" % (report["slides_src"], report["slides_out"]))
+                print("  text runs         : %d → %d" % (report["runs_src"], report["runs_out"]))
+                print("  font profile same : %s" % report["font_identical"])
+                print("  media identical   : %s (%d files)"
+                      % (report["media_identical"], report["media_count"]))
+                print("  zip entry order   : %s" % report["entry_order_identical"])
+                print("  residue (full doc): %d" % report["residue_count"])
+                for part, text, diff in report["residue"][:10]:
+                    print("    %s  %s  [%s]" % (part, text, diff))
+                print("  result            : %s" % ("PASS" if ok else "FAIL"))
+            if not ok:
+                exit_code = 3
+
+        if args.dry_run:
+            if tmp_out:
+                shutil.rmtree(os.path.dirname(tmp_out), ignore_errors=True)
+            if not args.json:
+                print("dry-run: no file written (would write %s)" % real_out)
+
+        if args.json:
+            import json
+            json.dump(summary, sys.stdout, ensure_ascii=False, indent=2)
+            sys.stdout.write("\n")
+        sys.exit(exit_code)
     else:
         convert_text_file(args.input, args.output, convert)
 
