@@ -165,6 +165,8 @@ s2hk deck.pptx --scope slides,notes # 自选组合
 
 ```bash
 python3 tests/test_convert.py       # 端到端：跨 run 拆词 / Zip Slip / 字体 / 质检 / 保真度
+python3 tests/test_safety.py        # 输出安全：同路径拒绝 / 原子写入
+python3 tests/test_installer_safety.py # 安装所有权：命令备份 / XDG 链接保护
 python3 .github/validate_skills.py  # 静态检查：frontmatter / 脚本语法 / shell 陷阱
 ```
 

@@ -1,9 +1,11 @@
 ---
 name: opencc-s2hk
 description: 简繁转换（默认香港繁体 s2hk）。处理内联文本、.txt/.md/.csv/.srt，以及 .pptx —— PPT 覆盖正文页/版式/母版/备注/SmartArt，可选统一中英文字体，版式图片表格全保留。触发词：简体转繁体、转香港繁体、港式用字、繁简转换、PPT转繁体、统一中英文字体、中文改楷体、s2hk、OpenCC；也用于把已是繁体但 戶/纔/裡/啟 混用的文档规整为一致港式用字。
-description_zh: 简繁转换与 PPT 字体统一（默认香港繁体）
-description_en: Simplified/Traditional converter with PPTX font control
 license: MIT
+compatibility: Requires Python 3 and OpenCC; PPTX support also requires lxml, and --verify requires python-pptx. The bundled Bash installer supports macOS and Linux.
+metadata:
+  description_zh: 简繁转换与 PPT 字体统一（默认香港繁体）
+  description_en: Simplified/Traditional converter with PPTX font control
 ---
 
 # opencc-s2hk
@@ -148,7 +150,8 @@ s2hk deck.pptx -o out.pptx --verify
 ## 安全
 
 - `.pptx` 属不可信输入：解压前校验每个 zip 条目，拒绝绝对路径与 `../` 路径穿越（Zip Slip），以 exit 2 报错。
-- 输出始终写入**新文件**，不覆盖源文件。
+- 输入与输出路径必须不同；同路径会以 exit 2 拒绝，不修改源文件。
+- 输出先写入同目录临时文件，成功后再原子替换目标，避免中途失败损坏旧输出。
 
 ## 变更说明（v2）
 

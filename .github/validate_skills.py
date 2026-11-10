@@ -11,6 +11,9 @@ import hashlib
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS_DIR = os.path.join(ROOT, "skills")
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+ALLOWED_FRONTMATTER = {
+    "name", "description", "license", "compatibility", "metadata", "allowed-tools"
+}
 
 errors = []
 checked = 0
@@ -65,6 +68,12 @@ for name in sorted(os.listdir(SKILLS_DIR) if os.path.isdir(SKILLS_DIR) else []):
     if block is None:
         fail("%s/SKILL.md: 第一行必须是 --- 且 frontmatter 要正确闭合" % name)
         continue
+
+    top_keys = set(re.findall(r"^([A-Za-z0-9_-]+):", block, re.MULTILINE))
+    unexpected = sorted(top_keys - ALLOWED_FRONTMATTER)
+    if unexpected:
+        fail("%s/SKILL.md: frontmatter 含不支持的顶层字段：%s"
+             % (name, ", ".join(unexpected)))
 
     declared = top_level_value(block, "name")
     if not declared:

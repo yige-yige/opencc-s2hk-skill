@@ -45,6 +45,7 @@ Residue verification tip (variant-aware — do NOT use a fixed simplified-char l
 import os
 import sys
 import argparse
+import tempfile
 
 
 def _bootstrap(mods):
@@ -87,6 +88,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pptx_core import (  # noqa: E402
     A, q, SCOPES, SCOPE_ORDER, parse_scopes, in_scope,
     safe_members, convert_paragraph_aware, convert_props, repack, verify,
+    ensure_distinct_paths,
 )
 
 
@@ -120,6 +122,7 @@ def convert_text_file(src, out, convert):
     if out is None:
         base, ext = os.path.splitext(src)
         out = base + ".s2hk" + ext
+    ensure_distinct_paths(src, out)
     ext = os.path.splitext(src)[1].lower()
     if ext in BINARY_HINTS:
         sys.stderr.write(
@@ -140,8 +143,20 @@ def convert_text_file(src, out, convert):
         )
         sys.exit(2)
     converted = convert(data)
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(converted)
+    out_dir = os.path.dirname(os.path.abspath(out)) or os.curdir
+    fd, tmp_out = tempfile.mkstemp(prefix=".s2hk-", suffix=".tmp", dir=out_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(converted)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_out, out)
+    except Exception:
+        try:
+            os.unlink(tmp_out)
+        except OSError:
+            pass
+        raise
     changed = sum(1 for a, b in zip(data, converted) if a != b)
     print("text file converted")
     print("  input : %s" % src)
@@ -189,6 +204,7 @@ def convert_pptx_file(src, out, convert, scopes=None, verbose=True,
     if out is None:
         base, ext = os.path.splitext(src)
         out = base + ".s2hk" + ext
+    ensure_distinct_paths(src, out)
     if scopes is None:
         scopes = list(SCOPE_ORDER)
     if font_scopes is None:
@@ -357,7 +373,6 @@ def main():
 
     ext = os.path.splitext(args.input)[1].lower()
     if ext == ".pptx":
-        import tempfile
         import shutil
         real_out = args.output
         if real_out is None:
@@ -420,7 +435,11 @@ def main():
             sys.stdout.write("\n")
         sys.exit(exit_code)
     else:
-        convert_text_file(args.input, args.output, convert)
+        try:
+            convert_text_file(args.input, args.output, convert)
+        except ValueError as e:
+            sys.stderr.write("ERROR: %s\n" % e)
+            sys.exit(2)
 
 
 if __name__ == "__main__":

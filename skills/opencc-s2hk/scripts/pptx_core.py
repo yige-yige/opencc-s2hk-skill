@@ -11,6 +11,7 @@
 修改时请同步另一份，CI 会校验两份内容一致。
 """
 import os
+import tempfile
 import zipfile
 
 A = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -86,6 +87,19 @@ def safe_members(zf, dest):
             raise ValueError("压缩包含路径穿越条目，已拒绝：%s" % name)
         safe.append(info)
     return safe
+
+
+def ensure_distinct_paths(src, out):
+    """拒绝输入与输出指向同一文件，包括符号链接和不同的相对路径写法。"""
+    src_real = os.path.normcase(os.path.realpath(os.path.abspath(src)))
+    out_real = os.path.normcase(os.path.realpath(os.path.abspath(out)))
+    same_file = False
+    try:
+        same_file = os.path.samefile(src, out)
+    except (OSError, AttributeError):
+        pass
+    if src_real == out_real or same_file:
+        raise ValueError("输出路径不能与输入文件相同：%s" % out)
 
 
 def convert_paragraph_aware(root, convert):
@@ -166,25 +180,35 @@ def repack(src, out, tmpdir, infos):
     直接 os.walk + ZIP_DEFLATED 会把原本 STORED（不压缩）的条目重新压缩，
     对已压缩的 PNG/JPEG 既不省空间又损失保真度。
     """
-    if os.path.exists(out):
-        os.remove(out)
-    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w") as zf:
-        for info in infos:
-            if info.filename.endswith("/"):
-                zf.writestr(info, b"")
-                continue
-            path = os.path.join(tmpdir, info.filename)
-            if os.path.isfile(path):
-                with open(path, "rb") as f:
-                    data = f.read()
-            else:
-                data = zin.read(info.filename)
-            ni = zipfile.ZipInfo(info.filename, date_time=info.date_time)
-            ni.compress_type = info.compress_type
-            ni.external_attr = info.external_attr
-            ni.internal_attr = info.internal_attr
-            ni.create_system = info.create_system
-            zf.writestr(ni, data)
+    ensure_distinct_paths(src, out)
+    out_dir = os.path.dirname(os.path.abspath(out)) or os.curdir
+    fd, tmp_out = tempfile.mkstemp(prefix=".s2hk-", suffix=".pptx", dir=out_dir)
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(tmp_out, "w") as zf:
+            for info in infos:
+                if info.filename.endswith("/"):
+                    zf.writestr(info, b"")
+                    continue
+                path = os.path.join(tmpdir, info.filename)
+                if os.path.isfile(path):
+                    with open(path, "rb") as f:
+                        data = f.read()
+                else:
+                    data = zin.read(info.filename)
+                ni = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+                ni.compress_type = info.compress_type
+                ni.external_attr = info.external_attr
+                ni.internal_attr = info.internal_attr
+                ni.create_system = info.create_system
+                zf.writestr(ni, data)
+        os.replace(tmp_out, out)
+    except Exception:
+        try:
+            os.unlink(tmp_out)
+        except OSError:
+            pass
+        raise
     return out
 
 

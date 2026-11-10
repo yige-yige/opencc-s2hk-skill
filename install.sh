@@ -23,7 +23,10 @@ PACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_SRC="$PACK_DIR/skills"
 CANON="$HOME/.agents/skills"                              # Agent Skills 标准位置
 XDG_CANON="${XDG_CONFIG_HOME:-$HOME/.config}/agents/skills"
-VENV_DIR="$HOME/.local/share/opencc-s2hk-skill/venv"
+STATE_DIR="$HOME/.local/share/opencc-s2hk-skill"
+VENV_DIR="$STATE_DIR/venv"
+BIN_BACKUP_DIR="$STATE_DIR/bin-backups"
+XDG_LINK_MARKER="$STATE_DIR/managed-xdg-link"
 BIN_DIR="$HOME/.local/bin"
 PKGS=(opencc lxml python-pptx)
 
@@ -48,12 +51,35 @@ warn() { printf '  [warn] %s\n' "$*"; }
 die()  { printf '\n[失败] %s\n' "$*" >&2; exit 1; }
 
 # 备份必须移出 skills 目录：留在原地会被 agent 当成同名技能重复加载
-BACKUP_ROOT="$HOME/.local/share/opencc-s2hk-skill/backups/$(date +%Y%m%d%H%M%S)"
+BACKUP_ROOT="$STATE_DIR/backups/$(date +%Y%m%d%H%M%S)"
 backup_away() {
   _src="$1"
   _rel="$(printf '%s' "${_src#$HOME/}" | tr '/' '_')"
   mkdir -p "$BACKUP_ROOT" 2>/dev/null || return 1
   mv "$_src" "$BACKUP_ROOT/$_rel" 2>/dev/null
+}
+
+is_managed_command() {
+  _cmd="$1"
+  [ -f "$_cmd" ] && [ ! -L "$_cmd" ] || return 1
+  grep -q '^# managed-by: opencc-s2hk-skill$' "$_cmd" 2>/dev/null \
+    || grep -q '^exec .*opencc-s2hk/scripts/s2hk_convert.py' "$_cmd" 2>/dev/null
+}
+
+prepare_command_path() {
+  _cmd="$1"; _name="$(basename "$_cmd")"
+  if [ -e "$_cmd" ] || [ -L "$_cmd" ]; then
+    if is_managed_command "$_cmd"; then
+      rm -f "$_cmd" || return 1
+    else
+      mkdir -p "$BIN_BACKUP_DIR" || return 1
+      if [ -e "$BIN_BACKUP_DIR/$_name" ] || [ -L "$BIN_BACKUP_DIR/$_name" ]; then
+        backup_away "$BIN_BACKUP_DIR/$_name" || return 1
+      fi
+      mv "$_cmd" "$BIN_BACKUP_DIR/$_name" || return 1
+      warn "$_cmd 已存在，原文件已备份"
+    fi
+  fi
 }
 
 # v2.0 起 pptx-s2t-font-convert 已并入 opencc-s2hk（字体能力变成 --ea/--latin）。
@@ -206,7 +232,15 @@ done
 if [ "$XDG_CANON" != "$CANON" ]; then
   mkdir -p "$(dirname "$XDG_CANON")" 2>/dev/null
   if [ ! -e "$XDG_CANON" ]; then
-    ln -s "$CANON" "$XDG_CANON" 2>/dev/null && ok "XDG 路径已链接 → $XDG_CANON"
+    if ln -s "$CANON" "$XDG_CANON" 2>/dev/null; then
+      if mkdir -p "$STATE_DIR" \
+          && printf '%s\n%s\n' "$XDG_CANON" "$CANON" > "$XDG_LINK_MARKER"; then
+        ok "XDG 路径已链接 → $XDG_CANON"
+      else
+        rm -f "$XDG_CANON"
+        warn "无法记录 XDG 链接所有权，已撤销该链接"
+      fi
+    fi
   fi
 fi
 
@@ -240,9 +274,11 @@ say ""
 say "[4/4] 全局命令与自检"
 mkdir -p "$BIN_DIR" || die "无法创建 $BIN_DIR"
 RUN_PY="${PYBIN:-python3}"
+prepare_command_path "$BIN_DIR/s2hk" || die "无法安全备份已有命令 $BIN_DIR/s2hk"
 
 cat > "$BIN_DIR/s2hk" <<EOF
 #!/bin/sh
+# managed-by: opencc-s2hk-skill
 # 简体 → 香港繁体（文本 / Markdown / PPTX）。任何能执行终端命令的 agent 都可调用。
 exec "$RUN_PY" "$CANON/opencc-s2hk/scripts/s2hk_convert.py" "\$@"
 EOF
@@ -250,9 +286,12 @@ chmod +x "$BIN_DIR/s2hk"
 ok "s2hk → $BIN_DIR/s2hk"
 
 if [ "$CORE_ONLY" -eq 0 ]; then
+  prepare_command_path "$BIN_DIR/s2hk-pptx-font" \
+    || die "无法安全备份已有命令 $BIN_DIR/s2hk-pptx-font"
   # v1 的 s2hk-pptx-font 保留为薄包装，老用户的脚本/习惯不会突然失效
   cat > "$BIN_DIR/s2hk-pptx-font" <<EOF
 #!/bin/sh
+# managed-by: opencc-s2hk-skill
 # [已废弃] v2 起字体能力并入主命令，请改用：
 #   s2hk in.pptx -o out.pptx --ea 楷体 --latin Arial
 # 本包装仅为兼容 v1 的调用方式（位置参数 in out）。

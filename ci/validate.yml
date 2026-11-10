@@ -40,7 +40,10 @@ jobs:
         run: python .github/validate_skills.py
 
       - name: 端到端回归测试
-        run: python tests/test_convert.py
+        run: |
+          python tests/test_convert.py
+          python tests/test_safety.py
+          python tests/test_installer_safety.py
 
       - name: 命令行冒烟测试
         run: |
